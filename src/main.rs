@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use qrcode::QrCode;
 use qrcode::render::unicode;
 use rand::RngCore;
@@ -17,12 +17,29 @@ use x25519_dalek::{PublicKey, StaticSecret};
 #[command(
     name = "wgqr",
     version,
-    about = "Generate a WireGuard peer config and print its QR code"
+    about = "Generate WireGuard peer configs with QR codes",
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
 )]
 struct Cli {
-    /// Peer address, e.g. 10.0.0.2 or 10.0.0.2/24
+    #[command(flatten)]
+    generate: GenerateArgs,
+
+    #[command(subcommand)]
+    command: Option<SubCmd>,
+}
+
+#[derive(Subcommand)]
+enum SubCmd {
+    /// Print a fresh PrivateKey / PublicKey / PresharedKey triple
+    Keys,
+}
+
+#[derive(Args)]
+struct GenerateArgs {
+    /// Peer address, e.g. 10.0.0.2 or 10.0.0.2/24 (required)
     #[arg(short, long)]
-    address: String,
+    address: Option<String>,
 
     /// Inherit defaults from an existing peer config (endpoint, server pubkey, DNS, prefix, etc.)
     #[arg(short, long)]
@@ -194,32 +211,42 @@ fn parse_template(path: &Path) -> Result<Template> {
     Ok(t)
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn run_keys() {
+    let (private_key, public_key) = generate_keypair();
+    let psk = generate_psk();
+    println!("PrivateKey = {private_key}");
+    println!("PublicKey = {public_key}");
+    println!("PresharedKey = {psk}");
+}
 
-    let template = match &cli.template {
+fn run_generate(args: GenerateArgs) -> Result<()> {
+    let template = match &args.template {
         Some(path) => parse_template(path)?,
         None => Template::default(),
     };
 
-    let (ip, addr_prefix) = parse_address(&cli.address)?;
+    let address = args
+        .address
+        .as_deref()
+        .ok_or_else(|| anyhow!("--address is required"))?;
+    let (ip, addr_prefix) = parse_address(address)?;
     let prefix = addr_prefix.or(template.prefix).unwrap_or(24);
-    let dns = cli
+    let dns = args
         .dns
         .or(template.dns)
         .unwrap_or_else(|| default_dns(ip).to_string());
-    let listen_port = cli.listen_port.or(template.listen_port).unwrap_or(51820);
-    let endpoint = cli.endpoint.or(template.endpoint).ok_or_else(|| {
+    let listen_port = args.listen_port.or(template.listen_port).unwrap_or(51820);
+    let endpoint = args.endpoint.or(template.endpoint).ok_or_else(|| {
         anyhow!("--endpoint is required (or pass --template with an Endpoint line)")
     })?;
-    let server_pubkey = cli.server_pubkey.or(template.server_pubkey).ok_or_else(|| {
+    let server_pubkey = args.server_pubkey.or(template.server_pubkey).ok_or_else(|| {
         anyhow!("--server-pubkey is required (or pass --template with a [Peer] PublicKey line)")
     })?;
-    let allowed_ips = cli
+    let allowed_ips = args
         .allowed_ips
         .or(template.allowed_ips)
         .unwrap_or_else(|| "0.0.0.0/0".to_string());
-    let keepalive = cli.keepalive.or(template.keepalive).unwrap_or(25);
+    let keepalive = args.keepalive.or(template.keepalive).unwrap_or(25);
 
     let (private_key, peer_public_key) = generate_keypair();
     let psk = generate_psk();
@@ -239,13 +266,13 @@ fn main() -> Result<()> {
          PersistentKeepalive = {keepalive}\n",
     );
 
-    if !cli.no_file {
-        let path = match cli.output {
+    if !args.no_file {
+        let path = match args.output {
             Some(p) => p,
             None => {
-                fs::create_dir_all(&cli.output_dir)
-                    .with_context(|| format!("creating {}", cli.output_dir.display()))?;
-                cli.output_dir.join(format!("wg-{ip}.conf"))
+                fs::create_dir_all(&args.output_dir)
+                    .with_context(|| format!("creating {}", args.output_dir.display()))?;
+                args.output_dir.join(format!("wg-{ip}.conf"))
             }
         };
         fs::write(&path, &config).with_context(|| format!("writing {}", path.display()))?;
@@ -261,7 +288,7 @@ fn main() -> Result<()> {
     eprintln!("AllowedIPs = {ip}/32");
     eprintln!();
 
-    if !cli.no_qr {
+    if !args.no_qr {
         let code = QrCode::new(config.as_bytes()).context("building QR code")?;
         let rendered = code
             .render::<unicode::Dense1x2>()
@@ -272,4 +299,15 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Some(SubCmd::Keys) => {
+            run_keys();
+            Ok(())
+        }
+        None => run_generate(cli.generate),
+    }
 }
