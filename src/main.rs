@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use clap::Parser;
 use qrcode::QrCode;
@@ -7,7 +7,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use std::fs;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -18,33 +18,37 @@ use x25519_dalek::{PublicKey, StaticSecret};
     about = "Generate a WireGuard peer config and print its QR code"
 )]
 struct Cli {
-    /// Peer address, e.g. 10.0.0.2 or 10.0.0.2/24 (prefix defaults to /24)
+    /// Peer address, e.g. 10.0.0.2 or 10.0.0.2/24
     #[arg(short, long)]
     address: String,
 
+    /// Inherit defaults from an existing peer config (endpoint, server pubkey, DNS, prefix, etc.)
+    #[arg(short, long)]
+    template: Option<PathBuf>,
+
     /// Server endpoint, host:port
     #[arg(short, long)]
-    endpoint: String,
+    endpoint: Option<String>,
 
     /// Server's WireGuard public key
     #[arg(short = 's', long)]
-    server_pubkey: String,
+    server_pubkey: Option<String>,
 
     /// DNS server (default: first three octets of --address + .1)
     #[arg(long)]
     dns: Option<String>,
 
-    /// Client ListenPort
-    #[arg(long, default_value_t = 51820)]
-    listen_port: u16,
+    /// Client ListenPort (default: 51820)
+    #[arg(long)]
+    listen_port: Option<u16>,
 
-    /// AllowedIPs (what gets routed through the tunnel)
-    #[arg(long, default_value = "0.0.0.0/0")]
-    allowed_ips: String,
+    /// AllowedIPs (default: 0.0.0.0/0)
+    #[arg(long)]
+    allowed_ips: Option<String>,
 
-    /// PersistentKeepalive in seconds
-    #[arg(long, default_value_t = 25)]
-    keepalive: u32,
+    /// PersistentKeepalive in seconds (default: 25)
+    #[arg(long)]
+    keepalive: Option<u32>,
 
     /// Directory to write the config into (filename: wg-<address>.conf)
     #[arg(long, default_value = "/tmp")]
@@ -63,6 +67,17 @@ struct Cli {
     no_qr: bool,
 }
 
+#[derive(Default)]
+struct Template {
+    prefix: Option<u8>,
+    dns: Option<String>,
+    listen_port: Option<u16>,
+    endpoint: Option<String>,
+    server_pubkey: Option<String>,
+    allowed_ips: Option<String>,
+    keepalive: Option<u32>,
+}
+
 fn generate_keypair() -> (String, String) {
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
@@ -78,14 +93,14 @@ fn generate_psk() -> String {
     STANDARD.encode(bytes)
 }
 
-fn parse_address(input: &str) -> Result<(Ipv4Addr, u8)> {
+fn parse_address(input: &str) -> Result<(Ipv4Addr, Option<u8>)> {
     if let Some((ip, prefix)) = input.split_once('/') {
         let ip = Ipv4Addr::from_str(ip).context("invalid IP in --address")?;
         let prefix: u8 = prefix.parse().context("invalid prefix in --address")?;
-        Ok((ip, prefix))
+        Ok((ip, Some(prefix)))
     } else {
         let ip = Ipv4Addr::from_str(input).context("invalid IP in --address")?;
-        Ok((ip, 24))
+        Ok((ip, None))
     }
 }
 
@@ -95,11 +110,73 @@ fn default_dns(ip: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(octets)
 }
 
+fn parse_template(path: &Path) -> Result<Template> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut t = Template::default();
+    let mut section: &str = "";
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = match name.trim().to_ascii_lowercase().as_str() {
+                "interface" => "interface",
+                "peer" => "peer",
+                _ => "",
+            };
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_ascii_lowercase();
+        let val = v.split('#').next().unwrap_or("").trim();
+        match (section, key.as_str()) {
+            ("interface", "address") => {
+                if let Some((_, prefix)) = val.split_once('/') {
+                    t.prefix = prefix.trim().parse().ok();
+                }
+            }
+            ("interface", "dns") => t.dns = Some(val.to_string()),
+            ("interface", "listenport") => t.listen_port = val.parse().ok(),
+            ("peer", "endpoint") => t.endpoint = Some(val.to_string()),
+            ("peer", "publickey") => t.server_pubkey = Some(val.to_string()),
+            ("peer", "allowedips") => t.allowed_ips = Some(val.to_string()),
+            ("peer", "persistentkeepalive") => t.keepalive = val.parse().ok(),
+            _ => {}
+        }
+    }
+    Ok(t)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (ip, prefix) = parse_address(&cli.address)?;
-    let dns = cli.dns.unwrap_or_else(|| default_dns(ip).to_string());
+    let template = match &cli.template {
+        Some(path) => parse_template(path)?,
+        None => Template::default(),
+    };
+
+    let (ip, addr_prefix) = parse_address(&cli.address)?;
+    let prefix = addr_prefix.or(template.prefix).unwrap_or(24);
+    let dns = cli
+        .dns
+        .or(template.dns)
+        .unwrap_or_else(|| default_dns(ip).to_string());
+    let listen_port = cli.listen_port.or(template.listen_port).unwrap_or(51820);
+    let endpoint = cli.endpoint.or(template.endpoint).ok_or_else(|| {
+        anyhow!("--endpoint is required (or pass --template with an Endpoint line)")
+    })?;
+    let server_pubkey = cli.server_pubkey.or(template.server_pubkey).ok_or_else(|| {
+        anyhow!("--server-pubkey is required (or pass --template with a [Peer] PublicKey line)")
+    })?;
+    let allowed_ips = cli
+        .allowed_ips
+        .or(template.allowed_ips)
+        .unwrap_or_else(|| "0.0.0.0/0".to_string());
+    let keepalive = cli.keepalive.or(template.keepalive).unwrap_or(25);
 
     let (private_key, peer_public_key) = generate_keypair();
     let psk = generate_psk();
@@ -117,11 +194,6 @@ fn main() -> Result<()> {
          PresharedKey = {psk}\n\
          PublicKey = {server_pubkey}\n\
          PersistentKeepalive = {keepalive}\n",
-        listen_port = cli.listen_port,
-        allowed_ips = cli.allowed_ips,
-        endpoint = cli.endpoint,
-        server_pubkey = cli.server_pubkey,
-        keepalive = cli.keepalive,
     );
 
     if !cli.no_file {
