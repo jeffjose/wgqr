@@ -6,8 +6,10 @@ use qrcode::render::unicode;
 use rand::RngCore;
 use rand::rngs::OsRng;
 use std::fs;
+use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -110,9 +112,50 @@ fn default_dns(ip: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(octets)
 }
 
+fn read_template_file(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => sudo_read(path),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn sudo_read(path: &Path) -> Result<String> {
+    eprintln!(
+        "permission denied on {}; re-reading via `sudo cat`",
+        path.display()
+    );
+    let child = Command::new("sudo")
+        .arg("cat")
+        .arg(path)
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(anyhow!(
+                "sudo not found and {} is not readable",
+                path.display()
+            ));
+        }
+        Err(e) => return Err(e).context("spawning sudo cat"),
+    };
+    let output = child.wait_with_output().context("waiting for sudo cat")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "sudo cat {} failed ({})",
+            path.display(),
+            output.status
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("contents of {} are not valid UTF-8", path.display()))
+}
+
 fn parse_template(path: &Path) -> Result<Template> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let content = read_template_file(path)?;
     let mut t = Template::default();
     let mut section: &str = "";
     for line in content.lines() {
