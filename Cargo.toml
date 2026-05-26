@@ -1,0 +1,20 @@
+[package]
+name = "wgqr"
+version = "0.1.0"
+edition = "2024"
+description = "Generate WireGuard peer configs with QR codes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jeffjose/wgqr"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+qrcode = "0.14"
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
