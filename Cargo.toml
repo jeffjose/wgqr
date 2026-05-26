@@ -3,7 +3,7 @@ name = "wgqr"
 version = "0.1.0"
 edition = "2024"
 description = "Generate WireGuard peer configs with QR codes"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/jeffjose/wgqr"
 
 [dependencies]
