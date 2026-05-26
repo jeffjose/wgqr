@@ -7,6 +7,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use std::fs;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -45,9 +46,13 @@ struct Cli {
     #[arg(long, default_value_t = 25)]
     keepalive: u32,
 
-    /// Output config filename (default: wg-<address>.conf)
+    /// Directory to write the config into (filename: wg-<address>.conf)
+    #[arg(long, default_value = "/tmp")]
+    output_dir: PathBuf,
+
+    /// Explicit output path (overrides --output-dir and the auto filename)
     #[arg(short, long)]
-    output: Option<String>,
+    output: Option<PathBuf>,
 
     /// Don't write the config file
     #[arg(long)]
@@ -120,15 +125,26 @@ fn main() -> Result<()> {
     );
 
     if !cli.no_file {
-        let filename = cli
-            .output
-            .unwrap_or_else(|| format!("wg-{ip}.conf"));
-        fs::write(&filename, &config).with_context(|| format!("writing {filename}"))?;
-        eprintln!("wrote {filename}");
+        let path = match cli.output {
+            Some(p) => p,
+            None => {
+                fs::create_dir_all(&cli.output_dir)
+                    .with_context(|| format!("creating {}", cli.output_dir.display()))?;
+                cli.output_dir.join(format!("wg-{ip}.conf"))
+            }
+        };
+        fs::write(&path, &config).with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("wrote {}", path.display());
     }
 
-    eprintln!("peer public key: {peer_public_key}");
-    eprintln!("(add this to the server's [Peer] section)");
+    eprintln!();
+    eprintln!("Add this peer to the server config:");
+    eprintln!();
+    eprintln!("[Peer]");
+    eprintln!("PublicKey = {peer_public_key}");
+    eprintln!("PresharedKey = {psk}");
+    eprintln!("AllowedIPs = {ip}/32");
+    eprintln!();
 
     if !cli.no_qr {
         let code = QrCode::new(config.as_bytes()).context("building QR code")?;
