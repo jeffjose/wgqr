@@ -24,9 +24,9 @@ wgqr --address 10.0.0.2 \
      --server-pubkey <SERVER_PUBKEY>
 ```
 
-This writes `/tmp/wg-10.0.0.2.conf`, prints the server-side `[Peer]` block on
-stderr (paste it into the server config), and renders a QR code of the client
-config on stdout.
+This writes `/tmp/wg-10.0.0.2.conf` and `/tmp/wg-10.0.0.2.png` (a large,
+scannable QR), prints the server-side `[Peer]` block on stderr (paste it into
+the server config), and renders the QR code on stdout.
 
 ### Reuse defaults from an existing peer
 
@@ -62,16 +62,19 @@ Prints a fresh PrivateKey / PublicKey / PresharedKey triple. No files written.
 | `--keepalive`         | `25`           | PersistentKeepalive seconds              |
 | `--output-dir`        | `/tmp`         | written as `wg-<address>.conf`           |
 | `-o, --output`        |                | explicit output path                     |
-| `--no-file`           |                | don't write the config file              |
-| `--no-qr`             |                | don't print the QR code                  |
-| `--qr-size`           | `m`            | `xs`, `s`, `m`, `l`, `xl` (see below)    |
+| `--no-file`           |                | don't write the config file (also skips PNG) |
+| `--no-qr`             |                | don't print the QR code to the terminal  |
+| `--no-png`            |                | don't write the PNG QR code              |
+| `--qr-size`           | `m`            | terminal-only; see below                 |
 
 \* not required when `--template` provides them.
 
 ## QR size
 
 Terminal QR codes are large because the encoded config is long. `--qr-size`
-gives five buckets:
+controls the QR drawn on stdout (the PNG file is always rendered at a fixed,
+high-resolution size — use it as the fallback if the terminal QR can't be
+scanned):
 
 - `xs` — lower error correction, no quiet zone. Smallest possible.
 - `s`  — lower error correction.

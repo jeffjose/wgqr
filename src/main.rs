@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use image::Luma;
 use qrcode::render::unicode;
 use qrcode::{EcLevel, QrCode};
 use rand::RngCore;
@@ -84,6 +85,10 @@ struct GenerateArgs {
     /// Don't print the QR code
     #[arg(long)]
     no_qr: bool,
+
+    /// Don't write the PNG QR code next to the config
+    #[arg(long)]
+    no_png: bool,
 
     /// QR code size (xs|s|m|l|xl). xs/s lower error correction; l/xl scale modules up.
     #[arg(long, default_value_t = QrSize::M, value_enum)]
@@ -279,7 +284,7 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
          PersistentKeepalive = {keepalive}\n",
     );
 
-    if !args.no_file {
+    let conf_path = if !args.no_file {
         let path = match args.output {
             Some(p) => p,
             None => {
@@ -290,6 +295,26 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
         };
         fs::write(&path, &config).with_context(|| format!("writing {}", path.display()))?;
         eprintln!("wrote {}", path.display());
+        Some(path)
+    } else {
+        None
+    };
+
+    if let Some(conf) = conf_path.as_ref() {
+        if !args.no_png {
+            let png_path = conf.with_extension("png");
+            let code =
+                QrCode::new(config.as_bytes()).context("building QR code for PNG")?;
+            let image = code
+                .render::<Luma<u8>>()
+                .module_dimensions(16, 16)
+                .quiet_zone(true)
+                .build();
+            image
+                .save(&png_path)
+                .with_context(|| format!("writing {}", png_path.display()))?;
+            eprintln!("wrote {}", png_path.display());
+        }
     }
 
     eprintln!();
