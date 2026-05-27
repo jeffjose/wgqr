@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use clap::{Args, Parser, Subcommand};
-use qrcode::QrCode;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use qrcode::render::unicode;
+use qrcode::{EcLevel, QrCode};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use std::fs;
@@ -84,6 +84,19 @@ struct GenerateArgs {
     /// Don't print the QR code
     #[arg(long)]
     no_qr: bool,
+
+    /// QR code size (xs|s|m|l|xl). xs/s lower error correction; l/xl scale modules up.
+    #[arg(long, default_value_t = QrSize::M, value_enum)]
+    qr_size: QrSize,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum QrSize {
+    Xs,
+    S,
+    M,
+    L,
+    Xl,
 }
 
 #[derive(Default)]
@@ -289,12 +302,29 @@ fn run_generate(args: GenerateArgs) -> Result<()> {
     eprintln!();
 
     if !args.no_qr {
-        let code = QrCode::new(config.as_bytes()).context("building QR code")?;
-        let rendered = code
-            .render::<unicode::Dense1x2>()
+        let ec = match args.qr_size {
+            QrSize::Xs | QrSize::S => EcLevel::L,
+            QrSize::M | QrSize::L | QrSize::Xl => EcLevel::M,
+        };
+        let code = QrCode::with_error_correction_level(config.as_bytes(), ec)
+            .context("building QR code")?;
+        let mut renderer = code.render::<unicode::Dense1x2>();
+        renderer
             .dark_color(unicode::Dense1x2::Light)
-            .light_color(unicode::Dense1x2::Dark)
-            .build();
+            .light_color(unicode::Dense1x2::Dark);
+        match args.qr_size {
+            QrSize::Xs => {
+                renderer.quiet_zone(false);
+            }
+            QrSize::S | QrSize::M => {}
+            QrSize::L => {
+                renderer.module_dimensions(2, 2);
+            }
+            QrSize::Xl => {
+                renderer.module_dimensions(3, 3);
+            }
+        }
+        let rendered = renderer.build();
         println!("{rendered}");
     }
 
